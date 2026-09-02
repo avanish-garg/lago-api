@@ -59,15 +59,22 @@ module Billing
     end
 
     # Days in the half-open window [from, to), counted in the customer's timezone. A day
-    # belongs to the window holding its start, so a window cut part-way through a day does
-    # not claim it — the windows a period is cut into therefore sum to exactly the period.
+    # belongs to the window holding its midnight, so a window cut part-way through a day
+    # does not claim it.
     #
-    # A day begun still counts whole at the end of service: a terminal window opens on the
-    # period's own boundary, so that midnight is inside it.
+    # That is what makes a cut cycle add up. The count is a difference of a function of the
+    # two ends alone, so however many times a period is cut — one rate change, then another
+    # — the windows telescope back to the period itself and bill it exactly once. Cuts
+    # inside a day are the normal case rather than the edge one: a pay-in-advance rate takes
+    # effect at an arbitrary instant, and RateCardRate#normalize_effective_from floors only
+    # arrears rates, to UTC midnight rather than to the customer's.
     #
-    # This is deliberately not Utils::Datetime.date_diff_with_timezone, which counts each
-    # side of a cut independently and so bills the shared day twice — a v1 upgrade at 14:00
-    # charges 16 + 15 days of a 30-day month.
+    # A day begun still counts whole at the end of service, since a terminal window opens on
+    # the period's own boundary and that midnight is inside it.
+    #
+    # Deliberately not Utils::Datetime.date_diff_with_timezone: that counts each side of a
+    # cut independently and both with a ceil, so the shared day is billed twice. A v1
+    # upgrade at 14:00 charges 16 + 15 days of a 30-day month, one at midnight 16 + 16.
     #
     # @example [Jun 1, Jun 1 09:00) is 1 day — Jun 1 begins inside it
     # @example [Jun 1, Jun 16 14:00) is 16 days, [Jun 16 14:00, Jul 1) is 14, and 16 + 14 = 30
@@ -75,7 +82,8 @@ module Billing
       (opening_date(to) - opening_date(from)).to_i
     end
 
-    # The first local date whose midnight is at or after `time`.
+    # The first local date whose midnight is at or after `time`. Compares against midnight
+    # rather than adding a day, so a DST transition cannot shift the answer.
     # @example in "Europe/Paris": Jun 16 00:00 local stays Jun 16, Jun 16 00:00 UTC is Jun 17
     def opening_date(time)
       local = time.in_time_zone(timezone)
