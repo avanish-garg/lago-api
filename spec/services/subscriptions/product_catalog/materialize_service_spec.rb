@@ -81,6 +81,25 @@ RSpec.describe Subscriptions::ProductCatalog::MaterializeService do
         expect(next_billing_at).to eq(Time.utc(2026, 4, 1))
       end
     end
+
+    # QA plan PH3: the first phase sets the cadence, so seeding the clock on the card's own
+    # monthly interval would put the first look a whole month late.
+    context "when the first rate phase overrides the interval" do
+      before do
+        create(
+          :rate_phase,
+          organization:,
+          plan_rate_card: plan.applied_rate_cards.sole,
+          position: 1,
+          billing_interval_cycle_count: 2,
+          rate_override: create(:rate_override, organization:, billing_interval_count: 1, billing_interval_unit: "week")
+        )
+      end
+
+      it "seeds the clock on the phase's cadence, not the card's" do
+        expect(next_billing_at).to eq(Time.utc(2026, 1, 22))
+      end
+    end
   end
 
   it "does not copy the plan entry's phases: pricing resolves by reference" do

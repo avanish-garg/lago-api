@@ -171,7 +171,7 @@ RSpec.describe Billing::Schedule do
   end
 
   describe "#next_due_at" do
-    it "reports when the first cycle beyond the instant falls due" do
+    it "reports when the first cycle beyond the timestamp falls due" do
       expect(schedule.next_due_at(Time.utc(2022, 3, 1))).to eq(Time.utc(2022, 4, 1))
     end
 
@@ -180,6 +180,42 @@ RSpec.describe Billing::Schedule do
 
       it "reports nothing further" do
         expect(schedule.next_due_at(Time.utc(2023, 1, 1))).to be_nil
+      end
+    end
+  end
+
+  # What seeds the clock: unlike #next_due_at this counts a cycle already due but still
+  # running, because nothing has billed it yet.
+  describe "#next_billing_at" do
+    it "waits for the first cycle to close in arrears" do
+      expect(schedule.next_billing_at(starts_at)).to eq(Time.utc(2022, 2, 1))
+    end
+
+    # Every closed cycle is behind us, so the answer is the one still to close.
+    it "skips the cycles that already closed" do
+      expect(schedule.next_billing_at(Time.utc(2022, 3, 10))).to eq(Time.utc(2022, 4, 1))
+    end
+
+    context "when the card bills in advance" do
+      let(:timing) { :advance }
+
+      it "reports the cycle in force even though it is already due" do
+        expect(schedule.next_billing_at(starts_at)).to eq(starts_at)
+      end
+
+      # The cycle covering Mar 10 opened on Mar 1 and was never billed, so the clock owes
+      # that rather than the cycle ahead — which is what #next_due_at would answer.
+      it "does not skip a due cycle that is still running" do
+        expect(schedule.next_billing_at(Time.utc(2022, 3, 10))).to eq(Time.utc(2022, 3, 1))
+        expect(schedule.next_due_at(Time.utc(2022, 3, 10))).to eq(Time.utc(2022, 4, 1))
+      end
+    end
+
+    context "when the schedule has already ended" do
+      let(:ends_at) { Time.utc(2022, 3, 1) }
+
+      it "reports nothing further" do
+        expect(schedule.next_billing_at(Time.utc(2023, 1, 1))).to be_nil
       end
     end
   end

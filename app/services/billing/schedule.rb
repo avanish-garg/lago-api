@@ -54,10 +54,22 @@ module Billing
       cycles_due_by(range.end).select { |cycle| cycle.to > range.begin }
     end
 
-    # When the first cycle beyond `timestamp` falls due — the card's own next billing date.
-    # Nil once the schedule has ended.
+    # When the first cycle beyond `timestamp` falls due. Nil once the schedule has ended.
     def next_due_at(timestamp)
       walk(timestamp).last&.due_at
+    end
+
+    # When the clock should next look at this card. Unlike #next_due_at this looks back as
+    # well as forward: a cycle already due but still running has not been billed, so it is
+    # what the clock owes next. Only once every due cycle has also closed does the answer
+    # move to the cycle ahead.
+    #
+    # @example advance, backdated to Dec 15 and asked on Mar 10: Mar 1, the cycle in force
+    # @example arrears, same card: Apr 1, since every closed cycle is already behind us
+    def next_billing_at(timestamp)
+      due, pending = walk(timestamp)
+
+      due.find { |cycle| cycle.to > timestamp }&.due_at || pending&.due_at
     end
 
     private
