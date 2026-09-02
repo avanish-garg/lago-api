@@ -99,6 +99,22 @@ RSpec.describe Customers::RefreshWalletsService do
       expect { subject }.to change(customer, :awaiting_wallet_refresh).from(true).to(false)
     end
 
+    context "when no event destination is configured" do
+      it "does not enqueue an event delivery job" do
+        expect { subject }.not_to have_enqueued_job(DeliverEventJob)
+      end
+    end
+
+    context "when an event destination is configured for the organization" do
+      before { stub_const("ENV", ENV.to_h.merge("LAGO_EVENT_DESTINATION_ORG_ID" => organization.id)) }
+
+      it "enqueues an event delivery job for the customer" do
+        expect { subject }.to have_enqueued_job(DeliverEventJob)
+          .with("customer_usage.refreshed", customer)
+          .once
+      end
+    end
+
     context "when charges have presentation_group_keys" do
       before do
         allow(Invoices::CustomerUsageService).to receive(:call!).and_call_original
