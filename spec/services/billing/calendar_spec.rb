@@ -164,9 +164,10 @@ RSpec.describe Billing::Calendar do
       expect(calendar.elapsed_ratio(Time.utc(2022, 6, 1), Time.utc(2022, 6, 1))).to eq(0.0)
     end
 
-    # A day begun counts as a whole day. This is the v1 billing rule, carried by the
-    # ceil in Utils::Datetime — a policy, not an implementation detail, so it is pinned
-    # here rather than left to emerge.
+    # A day begun counts as a whole day at the end of service. This is the v1 billing
+    # rule — a policy, not an implementation detail, so it is pinned here rather than
+    # left to emerge. It holds because a terminal window opens on the period's own
+    # boundary, so that midnight is inside it.
     context "when the window ends part-way through a day" do
       it "counts a full day for a termination a few hours in" do
         expect(calendar.elapsed_ratio(Time.utc(2022, 6, 1), Time.utc(2022, 6, 1, 9))).to eq(1.fdiv(30))
@@ -307,6 +308,137 @@ RSpec.describe Billing::Calendar do
     end
   end
 
+  # Where this engine parts company with v1, deliberately. v1 counts each side of a cut
+  # independently and both with a ceil, so the day the cut falls on is billed twice: an
+  # upgrade at 14:00 charges 16 + 15 days of a 30-day month, 103.33% of the period, and one
+  # at midnight charges 16 + 16. Here a day belongs to the window that opens it.
+  describe "a cycle cut part-way through a day" do
+    subject(:calendar) { calendar_for(Date.new(2022, 6, 1), 1, :month) }
+
+    let(:period) { calendar.period_at(Time.utc(2022, 6, 15)) }
+
+    it "gives the day holding the cut to the window that opens it" do
+      cut = Time.utc(2022, 6, 16, 14)
+
+      expect(calendar.elapsed_ratio(period.begin, cut)).to eq(16.fdiv(30))
+      expect(calendar.elapsed_ratio(cut, period.end)).to eq(14.fdiv(30))
+    end
+
+    it "bills one period and no more, wherever the cut lands" do
+      cuts = [
+        Time.utc(2022, 6, 16),
+        Time.utc(2022, 6, 16, 0, 0, 1),
+        Time.utc(2022, 6, 16, 14),
+        Time.utc(2022, 6, 30, 23, 59, 59)
+      ]
+
+      totals = cuts.map do |cut|
+        calendar.elapsed_ratio(period.begin, cut) + calendar.elapsed_ratio(cut, period.end)
+      end
+
+      expect(totals).to eq([1.0, 1.0, 1.0, 1.0])
+    end
+
+    it "holds for two rate changes inside one cycle" do
+      first = Time.utc(2022, 6, 6, 7)
+      second = Time.utc(2022, 6, 20, 22)
+
+      total = calendar.elapsed_ratio(period.begin, first) +
+        calendar.elapsed_ratio(first, second) +
+        calendar.elapsed_ratio(second, period.end)
+
+      expect(total).to eq(1.0)
+    end
+
+    # An arrears rate is floored to UTC midnight, which is 02:00 the same day in Paris and
+    # 20:00 the day before in New York — mid-day either way, so the timezone alone is
+    # enough to put a cut inside a day.
+    it "bills one period in a timezone where UTC midnight is not local midnight" do
+      totals = ["Europe/Paris", "America/New_York", "Asia/Kolkata", "Australia/Lord_Howe"].map do |timezone|
+        subject = calendar_for(Date.new(2022, 6, 1), 1, :month, timezone)
+        window = subject.period_at(Time.utc(2022, 6, 15))
+        cut = Time.utc(2022, 6, 16)
+
+        subject.elapsed_ratio(window.begin, cut) + subject.elapsed_ratio(cut, window.end)
+      end
+
+      expect(totals).to eq([1.0, 1.0, 1.0, 1.0])
+    end
+
+    # The cut lands in the hour the clocks move, where a day is 23 or 25 hours long.
+    it "bills one period when the cut falls on a daylight saving transition" do
+      new_york = Time.find_zone!("America/New_York")
+
+      totals = [[Date.new(2026, 3, 1), new_york.local(2026, 3, 8, 3, 30)],
+        [Date.new(2026, 11, 1), new_york.local(2026, 11, 1, 1, 30)]].map do |anchor, cut|
+        subject = calendar_for(anchor, 1, :month, "America/New_York")
+        window = subject.period_at(cut)
+
+        subject.elapsed_ratio(window.begin, cut) + subject.elapsed_ratio(cut, window.end)
+      end
+
+      expect(totals).to eq([1.0, 1.0])
+    end
+  end
+
+  # The credit for an unused pay-in-advance period, traced from the Plan v2 QA plan. The
+  # rule is composed in V2::Subscriptions::CreditUnusedAdvanceService — service runs to the
+  # end of the termination day, clamped to the period — so it is mirrored here rather than
+  # imported: the arithmetic QA signs off belongs with the layer that performs it, while
+  # the amounts belong to the fee services.
+  describe "the unused share of an advance period" do
+    def unused_ratio(calendar, period, terminated_at, timezone = "UTC")
+      consumed_until = [terminated_at.in_time_zone(timezone).end_of_day, period.end].min
+
+      1 - calendar.elapsed_ratio(period.begin, consumed_until)
+    end
+
+    # QA plan X2: a 30-day advance period Sep 10 -> Oct 9 paid at 150.00, terminated on
+    # Sep 25. The 14 unused days are worth 70.00; the termination day is consumed.
+    it "credits the fourteen unused days of the X2 scenario" do
+      calendar = calendar_for(Date.new(2026, 9, 10), 1, :month)
+      ratio = unused_ratio(calendar, calendar.period_at(Time.utc(2026, 9, 15)), Time.utc(2026, 9, 25))
+
+      expect(ratio).to eq(14.fdiv(30))
+      expect((ratio * 150_00).round).to eq(70_00)
+    end
+
+    # QA plan X1 pins the termination day as inclusive, so the hour it happens at must not
+    # move the credit. Terminating at midnight used to credit a day more than terminating
+    # the same afternoon.
+    it "credits the same whatever hour the termination lands at" do
+      calendar = calendar_for(Date.new(2026, 8, 1), 1, :month)
+      period = calendar.period_at(Time.utc(2026, 8, 15))
+
+      ratios = [Time.utc(2026, 8, 17), Time.utc(2026, 8, 17, 12, 34, 56), Time.utc(2026, 8, 17, 23, 59, 59)]
+        .map { |terminated_at| unused_ratio(calendar, period, terminated_at) }
+
+      # The ratio is what is left after the consumed share, so it lands one float step off
+      # the fraction written directly. The point here is that the hour cannot move it.
+      expect(ratios.uniq.size).to eq(1)
+      expect(ratios.first).to be_within(1e-12).of(14.fdiv(31))
+    end
+
+    it "credits the same whatever hour it lands at in a customer timezone" do
+      calendar = calendar_for(Date.new(2026, 8, 1), 1, :month, "America/New_York")
+      period = calendar.period_at(Time.utc(2026, 8, 15))
+      new_york = Time.find_zone!("America/New_York")
+
+      ratios = [new_york.local(2026, 8, 17), new_york.local(2026, 8, 17, 12, 34, 56)]
+        .map { |terminated_at| unused_ratio(calendar, period, terminated_at, "America/New_York") }
+
+      expect(ratios.uniq.size).to eq(1)
+      expect(ratios.first).to be_within(1e-12).of(14.fdiv(31))
+    end
+
+    it "credits nothing when the termination lands on the closing boundary" do
+      calendar = calendar_for(Date.new(2026, 8, 1), 1, :month)
+      period = calendar.period_at(Time.utc(2026, 8, 15))
+
+      expect(unused_ratio(calendar, period, Time.utc(2026, 8, 31, 23, 59, 59))).to eq(0.0)
+    end
+  end
+
   # The two invariants everything downstream assumes, stated only through the public
   # API and checked across a matrix rather than a few chosen rows.
   describe "invariants" do
@@ -325,6 +457,50 @@ RSpec.describe Billing::Calendar do
         next if period.cover?(time)
 
         "#{label} at #{time}: got #{period}"
+      end
+
+      expect(violations).to be_empty
+    end
+
+    # A rate change cuts a period into separately-billed windows, so their shares have to
+    # add up to exactly one period — never 103% because both sides claimed the day the cut
+    # fell on. Checked at every anchor, cadence, timezone and time of day above, since a
+    # cut lands wherever a rate happens to take effect.
+    it "never bills more or less than the whole period when a period is cut in two" do
+      violations = each_case do |subject, time, label|
+        period = subject.period_at(time)
+        total = subject.elapsed_ratio(period.begin, time) + subject.elapsed_ratio(time, period.end)
+        next if (total - 1.0).abs < 1e-9
+
+        "#{label} cut at #{time}: bills #{total} of the period"
+      end
+
+      expect(violations).to be_empty
+    end
+
+    # A cycle can be cut more than once, and a pay-in-advance rate takes effect at an
+    # arbitrary instant rather than at midnight (RateCardRate#normalize_effective_from
+    # floors only arrears rates, and to UTC midnight at that). covered_days is a
+    # difference of its two endpoints, so any partition telescopes — this pins it instead
+    # of trusting it, across every cadence and timezone above.
+    it "bills exactly the whole period however many times it is cut" do
+      fractions = [0.11, 0.37, 0.5, 0.5001, 0.83, 0.9999]
+
+      violations = timezones.flat_map do |timezone|
+        [[1, :month], [3, :month], [1, :week], [1, :year]].flat_map do |count, unit|
+          anchors.filter_map do |anchor|
+            subject = calendar_for(anchor, count, unit, timezone)
+            period = subject.period_at(anchor.in_time_zone(timezone) + 2.days)
+            span = period.end - period.begin
+            cuts = fractions.map { |fraction| period.begin + (span * fraction) }
+            total = [period.begin, *cuts, period.end].each_cons(2).sum do |from, to|
+              subject.elapsed_ratio(from, to)
+            end
+            next if (total - 1.0).abs < 1e-9
+
+            "#{count} #{unit} on #{anchor} in #{timezone}: bills #{total} of the period"
+          end
+        end
       end
 
       expect(violations).to be_empty

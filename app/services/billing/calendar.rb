@@ -32,7 +32,9 @@ module Billing
     # Days in the whole period `timestamp` falls in, whether or not the window covers it all.
     # @example anchored on Jun 1 monthly: days_in_period_at(Jun 10) is 30
     def days_in_period_at(timestamp)
-      days_in(period_at(timestamp))
+      period = period_at(timestamp)
+
+      covered_days(period.begin, period.end)
     end
 
     # Fraction of its period the half-open window [from, to) covers. The window must sit
@@ -43,7 +45,7 @@ module Billing
       raise ArgumentError, "window end #{to} precedes its start #{from}" if to < from
       raise ArgumentError, "window [#{from}, #{to}) crosses the boundary at #{period.end}" if to > period.end
 
-      covered_days(from, to).fdiv(days_in(period))
+      covered_days(from, to).fdiv(covered_days(period.begin, period.end))
     end
 
     private
@@ -56,15 +58,29 @@ module Billing
       interval.advance(anchor, index)
     end
 
-    # @example a 30-day period: days_in(Jun 1...Jul 1) is 30
-    def days_in(period)
-      (period.end.to_date - period.begin.to_date).to_i
+    # Days in the half-open window [from, to), counted in the customer's timezone. A day
+    # belongs to the window holding its start, so a window cut part-way through a day does
+    # not claim it — the windows a period is cut into therefore sum to exactly the period.
+    #
+    # A day begun still counts whole at the end of service: a terminal window opens on the
+    # period's own boundary, so that midnight is inside it.
+    #
+    # This is deliberately not Utils::Datetime.date_diff_with_timezone, which counts each
+    # side of a cut independently and so bills the shared day twice — a v1 upgrade at 14:00
+    # charges 16 + 15 days of a 30-day month.
+    #
+    # @example [Jun 1, Jun 1 09:00) is 1 day — Jun 1 begins inside it
+    # @example [Jun 1, Jun 16 14:00) is 16 days, [Jun 16 14:00, Jul 1) is 14, and 16 + 14 = 30
+    def covered_days(from, to)
+      (opening_date(to) - opening_date(from)).to_i
     end
 
-    # Utils::Datetime counts between inclusive bounds, so the exclusive end is pulled back.
-    # @example [Jun 1, Jul 1) is 30 days; without the second it would be 31
-    def covered_days(from, to)
-      Utils::Datetime.date_diff_with_timezone(from, to - 1.second, timezone)
+    # The first local date whose midnight is at or after `time`.
+    # @example in "Europe/Paris": Jun 16 00:00 local stays Jun 16, Jun 16 00:00 UTC is Jun 17
+    def opening_date(time)
+      local = time.in_time_zone(timezone)
+
+      (local == local.beginning_of_day) ? local.to_date : local.to_date + 1
     end
   end
 end
