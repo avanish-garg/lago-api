@@ -37,8 +37,8 @@ module Billing
         .sort
     end
 
-    def self.rate_at(rates, instant)
-      rates.select { |rate| rate.effective_from <= instant }.max_by(&:effective_from)
+    def self.rate_at(rates, timestamp)
+      rates.select { |rate| rate.effective_from <= timestamp }.max_by(&:effective_from)
     end
 
     private_class_method :changes_inside, :rate_at

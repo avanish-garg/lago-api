@@ -2,7 +2,7 @@
 
 require "rails_helper"
 
-RSpec.describe Billing::Schedules::BuildService do
+RSpec.describe Billing::BuildScheduleService do
   subject(:result) { described_class.call(subscription_rate_card:, plan_rate_cards:) }
 
   let(:organization) { create(:organization) }

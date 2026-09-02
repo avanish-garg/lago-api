@@ -23,7 +23,7 @@ module Billing
     # `override` are carried for the caller: a cycle knows which phase priced it.
     Phase = Data.define(:cycle_count, :interval, :code, :override)
 
-    # One billing cycle. `due_at` is the instant it becomes billable, which is the only
+    # One billing cycle. `due_at` is the moment it becomes billable, which is the only
     # thing billing timing changes: the start of the cycle in advance, its end in arrears.
     # `calendar` is the ruler it was measured on, so a caller can ask what share of a whole
     # period any window inside it covers.
@@ -40,11 +40,11 @@ module Billing
       validate!
     end
 
-    # Every cycle billable by `instant` — the ones whose due_at has arrived. A cycle
-    # running over that instant but closing after it is not due yet, so it is left out.
+    # Every cycle billable by `timestamp` — the ones whose due_at has arrived. A cycle
+    # running over it but closing after it is not due yet, so it is left out.
     # @example starting Jan 15, monthly on the 1st: [Jan 15, Feb 1), [Feb 1, Mar 1), ...
-    def cycles_due_by(instant)
-      walk(instant).first
+    def cycles_due_by(timestamp)
+      walk(timestamp).first
     end
 
     # Every cycle due by the end of `range` whose service period reaches into it. Billing a
@@ -54,19 +54,19 @@ module Billing
       cycles_due_by(range.end).select { |cycle| cycle.to > range.begin }
     end
 
-    # When the first cycle beyond `instant` falls due — the card's own next billing date.
+    # When the first cycle beyond `timestamp` falls due — the card's own next billing date.
     # Nil once the schedule has ended.
-    def next_due_at(instant)
-      walk(instant).last&.due_at
+    def next_due_at(timestamp)
+      walk(timestamp).last&.due_at
     end
 
     private
 
     attr_reader :anchor_date, :phases, :timezone, :starts_at, :ends_at, :timing
 
-    # Walks the phases in order, collecting cycles until one falls due after `instant` or
+    # Walks the phases in order, collecting cycles until one falls due after `timestamp` or
     # the schedule ends. Returns the collected cycles and the first one left out.
-    def walk(instant)
+    def walk(timestamp)
       cursor = starts_at
       index = 0
       due = []
@@ -83,7 +83,7 @@ module Billing
 
           period = calendar.period_at(cursor)
           cycle = cycle_for(period, cursor, index, phase, calendar)
-          if cycle.due_at > instant
+          if cycle.due_at > timestamp
             pending = cycle
             break
           end
@@ -110,8 +110,8 @@ module Billing
       Calendar.new(anchor_date: anchor, interval: phase.interval, timezone:)
     end
 
-    # Clamped by where the walk stands and by the card's end — never by the instant the
-    # caller asked about. A cycle in force at that instant still runs to its own boundary.
+    # Clamped by where the walk stands and by the card's end — never by the timestamp the
+    # caller asked about. A cycle in force then still runs to its own boundary.
     def cycle_for(period, cursor, index, phase, calendar)
       from = [period.begin, cursor].max
       to = ends_at ? [period.end, ends_at].min : period.end

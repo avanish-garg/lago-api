@@ -14,25 +14,25 @@ module Billing
       @anchor ||= anchor_date.in_time_zone(timezone).beginning_of_day
     end
 
-    # The index of the period `time` falls in, negative before the anchor. A position on
+    # The index of the period `timestamp` falls in, negative before the anchor. A position on
     # this ruler, not a billing cycle number.
     # @example anchored on Jul 15: index_at(Jul 2) is -1, the period [Jun 15, Jul 15)
-    def index_at(time)
-      interval.steps_between(anchor, time.in_time_zone(timezone))
+    def index_at(timestamp)
+      interval.steps_between(anchor, timestamp.in_time_zone(timezone))
     end
 
-    # The half-open period `time` falls in, as [boundary, next boundary).
+    # The half-open period `timestamp` falls in, as [boundary, next boundary).
     # @example anchored on Feb 1: period_at(Feb 10) is 2022-02-01...2022-03-01
-    def period_at(time)
-      index = index_at(time)
+    def period_at(timestamp)
+      index = index_at(timestamp)
 
       at(index)...at(index + 1)
     end
 
-    # Days in the whole period `time` falls in, whether or not the window covers it all.
+    # Days in the whole period `timestamp` falls in, whether or not the window covers it all.
     # @example anchored on Jun 1 monthly: days_in_period_at(Jun 10) is 30
-    def days_in_period_at(time)
-      days_in(period_at(time))
+    def days_in_period_at(timestamp)
+      days_in(period_at(timestamp))
     end
 
     # Fraction of its period the half-open window [from, to) covers. The window must sit
