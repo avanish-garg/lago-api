@@ -71,12 +71,12 @@ RSpec.describe Billing::Schedule do
         .to eq(["2022-01-15 -> 2022-01-31", "2022-02-01 -> 2022-02-28"])
     end
 
-    # A cycle running over the instant but closing after it has not fallen due yet.
-    it "leaves out a cycle that has not closed by the instant" do
+    # A cycle running over the timestamp but closing after it has not fallen due yet.
+    it "leaves out a cycle that has not closed by the timestamp" do
       expect(windows(schedule.cycles_due_by(Time.utc(2022, 2, 10)))).to eq(["2022-01-15 -> 2022-01-31"])
     end
 
-    # The last one closes exactly on the instant asked about, so it has fallen due.
+    # The last one closes exactly on the timestamp asked about, so it has fallen due.
     it "numbers cycles from zero, counting from the card start" do
       expect(schedule.cycles_due_by(Time.utc(2022, 5, 1)).map(&:index)).to eq([0, 1, 2, 3])
     end
